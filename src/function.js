@@ -62,9 +62,14 @@ export function handleSocketConnection(socket, io) {
             console.log("To User ID", toUserId)
             console.log("Message", message)
             console.log("Type", type)
+            
+            // Add # prefix to ticket ID for createMessage
+            const ticketNumber = `#${ticketId}`;
+            console.log("Ticket Number with #:", ticketNumber);
+            
             const saved = await createMessage({
                 user_id: fromUserId,
-                support_ticket_id: ticketId,
+                support_ticket_id: ticketNumber,
                 message,
                 type,
             });
