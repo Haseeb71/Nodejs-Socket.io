@@ -1,12 +1,12 @@
 import { createMessage, getConversation } from './Message.js';
-import { 
-    createNotification, 
+import {
+    createNotification,
     createBroadcastNotification,
-    getUserNotifications, 
+    getUserNotifications,
     getUserNotificationsWithStatus,
-    getUnreadNotificationCount, 
+    getUnreadNotificationCount,
     markNotificationAsRead,
-    markAllNotificationsAsRead 
+    markAllNotificationsAsRead
 } from './Notification.js';
 
 const users = new Map();
@@ -57,7 +57,11 @@ export function handleSocketConnection(socket, io) {
             if (!fromUserId || !toUserId || !ticketId || !message) {
                 return socket.emit("error", { message: "Missing message fields" });
             }
-
+            console.log("Ticket ID", ticketId)
+            console.log("From User ID", fromUserId)
+            console.log("To User ID", toUserId)
+            console.log("Message", message)
+            console.log("Type", type)
             const saved = await createMessage({
                 user_id: fromUserId,
                 support_ticket_id: ticketId,
@@ -113,8 +117,8 @@ export function handleSocketConnection(socket, io) {
             }
 
             // Acknowledge to sender
-            socket.emit("notificationSent", { 
-                success: true, 
+            socket.emit("notificationSent", {
+                success: true,
                 notificationId: notification.id,
                 delivered: !!targetUserSocket
             });
@@ -129,16 +133,16 @@ export function handleSocketConnection(socket, io) {
     socket.on("markNotificationRead", (data) => {
         try {
             const { notificationId } = typeof data === 'string' ? JSON.parse(data) : data;
-            
+
             if (!notificationId) {
                 return socket.emit("error", { message: "Missing notification ID" });
             }
 
             const success = markNotificationAsRead(socket.userId, notificationId);
-            
+
             if (success) {
-                socket.emit("notificationRead", { 
-                    success: true, 
+                socket.emit("notificationRead", {
+                    success: true,
                     notificationId,
                     userId: socket.userId
                 });
@@ -156,7 +160,7 @@ export function handleSocketConnection(socket, io) {
     socket.on("sendBroadcastNotification", (data) => {
         try {
             const { type, message, data: notificationData } = typeof data === 'string' ? JSON.parse(data) : data;
-            
+
             if (!type || !message) {
                 return socket.emit("error", { message: "Missing notification fields (type, message required)" });
             }
@@ -175,7 +179,7 @@ export function handleSocketConnection(socket, io) {
     socket.on("readMessages", async (data) => {
         try {
             const { ticketId } = typeof data === 'string' ? JSON.parse(data) : data;
-            
+
             if (!ticketId) {
                 return socket.emit("error", { message: "Missing ticketId" });
             }
@@ -205,7 +209,7 @@ export function handleSocketConnection(socket, io) {
     socket.on("getUnreadCount", (data) => {
         try {
             const unreadCount = getUnreadNotificationCount(socket.userId);
-            
+
             socket.emit("unreadCount", {
                 success: true,
                 unreadCount,
@@ -222,7 +226,7 @@ export function handleSocketConnection(socket, io) {
     socket.on("markAllNotificationsRead", (data) => {
         try {
             const markedCount = markAllNotificationsAsRead(socket.userId);
-            
+
             socket.emit("allNotificationsRead", {
                 success: true,
                 markedCount,
