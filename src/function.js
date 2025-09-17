@@ -63,13 +63,13 @@ export function handleSocketConnection(socket, io) {
             console.log("Message", message)
             console.log("Type", type)
             
-            // Add # prefix to ticket ID for createMessage
-            const ticketNumber = `#${ticketId}`;
-            console.log("Ticket Number with #:", ticketNumber);
+            // Extract numeric part from ticket ID (remove # if present)
+            const numericTicketId = ticketId.toString().replace('#', '');
+            console.log("Numeric Ticket ID for database:", numericTicketId);
             
             const saved = await createMessage({
                 user_id: fromUserId,
-                support_ticket_id: ticketNumber,
+                support_ticket_id: numericTicketId,
                 message,
                 type,
             });
