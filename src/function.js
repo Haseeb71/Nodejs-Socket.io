@@ -1,4 +1,5 @@
 import { createMessage, getConversation } from './Message.js';
+import { pool } from './config/db.js';
 import {
     createNotification,
     createBroadcastNotification,
@@ -9,7 +10,42 @@ import {
     markAllNotificationsAsRead
 } from './Notification.js';
 
-const users = new Map();
+// Translate a client-sent author_id into the real users.id.
+// authors.id and users.id overlap (authors.id=10 is a different row than
+// users.id=10), so the toUserId the frontend sends can't be trusted — derive
+// it from the data, mirroring Laravel's NotificationService::resolveRecipientUserId.
+const resolveRecipientUserId = async ({ targetType, targetId, toUserId }) => {
+    try {
+        // Like/comment on an article: recipient is the article's writer.
+        if (targetType === 'article' && targetId) {
+            const [rows] = await pool.query(
+                `SELECT au.user_id FROM articles a
+                   JOIN authors au ON au.id = a.author_id
+                  WHERE a.id = ?`, [targetId]);
+            if (rows[0]?.user_id) return String(rows[0].user_id);
+        }
+        // Comment on an article: target_id is the comment id, so walk
+        // comment -> article -> author -> user. Only top-level comments
+        // (parent_id IS NULL) notify the writer; replies are left untouched.
+        if (targetType === 'comment' && targetId) {
+            const [rows] = await pool.query(
+                `SELECT au.user_id FROM comments c
+                   JOIN articles a ON a.id = c.article_id
+                   JOIN authors au ON au.id = a.author_id
+                  WHERE c.id = ? AND c.parent_id IS NULL`, [targetId]);
+            if (rows[0]?.user_id) return String(rows[0].user_id);
+        }
+        // Following an author etc.: map authors.id -> user_id.
+        if (targetType === 'author' && toUserId) {
+            const [rows] = await pool.query(
+                `SELECT user_id FROM authors WHERE id = ?`, [toUserId]);
+            if (rows[0]?.user_id) return String(rows[0].user_id);
+        }
+    } catch (err) {
+        console.error('resolveRecipientUserId failed:', err.message);
+    }
+    return String(toUserId); // fall back — never break delivery
+};
 
 export function handleSocketConnection(socket, io) {
     console.log("🔌 Socket connected:", socket.id);
@@ -19,8 +55,14 @@ export function handleSocketConnection(socket, io) {
         try {
             const { userId } = typeof data === 'string' ? JSON.parse(data) : data;
 
-            users.set(userId, socket);
-            socket.userId = userId;
+            // Normalize to String so room names are consistent even if a client
+            // registers a number.
+            socket.userId = String(userId);
+
+            // Use a per-user room instead of a single-socket map. The same user
+            // can connect from multiple tabs/devices without overwriting each
+            // other, and concurrent users are fully isolated by room name.
+            socket.join(`user_${socket.userId}`);
 
             console.log(`✅ User registered:(${userId})`);
             socket.emit("user join", userId);
@@ -91,7 +133,7 @@ export function handleSocketConnection(socket, io) {
         }
     });
     // Send notification
-    socket.on("sendNotification", (data, ack) => {
+    socket.on("sendNotification", async (data, ack) => {
         console.log("📥 [sendNotification] received", data);
         try {
             let parsed;
@@ -103,7 +145,8 @@ export function handleSocketConnection(socket, io) {
                 return;
             }
 
-            const { toUserId, type, message, data: notificationData } = parsed;
+            // target_id / target_type were being dropped — keep them to resolve the recipient.
+            const { toUserId, type, target_id, target_type, message, data: notificationData } = parsed;
             const fromUserId = socket.userId;
 
             if (!toUserId || !type || !message) {
@@ -111,17 +154,30 @@ export function handleSocketConnection(socket, io) {
                 return;
             }
 
-            // Create notification using the notification function
-            const notification = createNotification(toUserId, type, message, notificationData);
+            // Translate author_id -> real user_id so realtime delivery matches
+            // the DB-stored copy (the frontend sends the article's author_id).
+            const recipientId = await resolveRecipientUserId({
+                targetType: target_type,
+                targetId: target_id,
+                toUserId,
+            });
+            if (recipientId !== String(toUserId)) {
+                console.log(`🔁 Recipient resolved ${toUserId} -> ${recipientId}`);
+            }
 
-            // Send notification to specific user if they're online.
-            // Normalize to String because users are registered with String(userId).
-            const targetUserSocket = users.get(String(toUserId));
-            if (targetUserSocket) {
-                targetUserSocket.emit("notification", notification);
-                console.log(`✅ Notification sent to user: ${toUserId}`);
+            // Create notification using the notification function
+            const notification = createNotification(recipientId, type, message, notificationData);
+
+            // Deliver to every socket this user has open, via their room.
+            // Routing by room (not a single stored socket) keeps concurrent
+            // users isolated and supports multi-tab/multi-device delivery.
+            const room = `user_${recipientId}`;
+            const isOnline = (io.sockets.adapter.rooms.get(room)?.size ?? 0) > 0;
+            if (isOnline) {
+                io.to(room).emit("notification", notification);
+                console.log(`✅ Notification sent to user: ${recipientId}`);
             } else {
-                console.log(`⚠️ User ${toUserId} is offline, notification stored for later`);
+                console.log(`⚠️ User ${recipientId} is offline, notification stored for later`);
             }
 
             // ✅ Invoke the acknowledgement callback the frontend is waiting on.
@@ -131,7 +187,7 @@ export function handleSocketConnection(socket, io) {
                 ack({
                     success: true,
                     notificationId: notification.id,
-                    delivered: !!targetUserSocket
+                    delivered: isOnline
                 });
             }
             console.log("✅ [sendNotification] after ack");
@@ -254,9 +310,11 @@ export function handleSocketConnection(socket, io) {
 
     socket.on("disconnect", (reason) => {
         console.log("🔌 Socket disconnected:", socket.id, "reason:", reason);
+        // Socket.IO removes this socket from its rooms automatically. Other
+        // tabs/devices for the same user stay in user_<id>, so the user only
+        // counts as offline once their last socket disconnects.
         if (socket.userId) {
-            users.delete(socket.userId);
-            console.log(`❌ Disconnected user: ${socket.userId}`);
+            console.log(`❌ Socket for user ${socket.userId} disconnected`);
         }
     });
 }
