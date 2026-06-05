@@ -91,14 +91,15 @@ export function handleSocketConnection(socket, io) {
         }
     });
     // Send notification
-    socket.on("sendNotification", (data) => {
+    socket.on("sendNotification", (data, ack) => {
+        console.log("📥 [sendNotification] received", data);
         try {
             let parsed;
             try {
                 parsed = typeof data === 'string' ? JSON.parse(data) : data;
             } catch (err) {
                 console.error("❌ Invalid JSON format:", err.message);
-                socket.emit("error", { message: "Invalid JSON format" });
+                if (ack) ack({ error: "Invalid JSON format" });
                 return;
             }
 
@@ -106,14 +107,16 @@ export function handleSocketConnection(socket, io) {
             const fromUserId = socket.userId;
 
             if (!toUserId || !type || !message) {
-                return socket.emit("error", { message: "Missing notification fields (toUserId, type, message required)" });
+                if (ack) ack({ error: "Missing notification fields (toUserId, type, message required)" });
+                return;
             }
 
             // Create notification using the notification function
             const notification = createNotification(toUserId, type, message, notificationData);
 
-            // Send notification to specific user if they're online
-            const targetUserSocket = users.get(toUserId);
+            // Send notification to specific user if they're online.
+            // Normalize to String because users are registered with String(userId).
+            const targetUserSocket = users.get(String(toUserId));
             if (targetUserSocket) {
                 targetUserSocket.emit("notification", notification);
                 console.log(`✅ Notification sent to user: ${toUserId}`);
@@ -121,16 +124,21 @@ export function handleSocketConnection(socket, io) {
                 console.log(`⚠️ User ${toUserId} is offline, notification stored for later`);
             }
 
-            // Acknowledge to sender
-            socket.emit("notificationSent", {
-                success: true,
-                notificationId: notification.id,
-                delivered: !!targetUserSocket
-            });
+            // ✅ Invoke the acknowledgement callback the frontend is waiting on.
+            // Must run on every path or the client times out after 10s.
+            console.log("📤 [sendNotification] before ack");
+            if (ack) {
+                ack({
+                    success: true,
+                    notificationId: notification.id,
+                    delivered: !!targetUserSocket
+                });
+            }
+            console.log("✅ [sendNotification] after ack");
 
         } catch (err) {
             console.error("❌ sendNotification error:", err.message);
-            socket.emit("error", { message: "Notification send failed" });
+            if (ack) ack({ error: "Notification send failed" });
         }
     });
 
@@ -244,7 +252,8 @@ export function handleSocketConnection(socket, io) {
         }
     });
 
-    socket.on("disconnect", () => {
+    socket.on("disconnect", (reason) => {
+        console.log("🔌 Socket disconnected:", socket.id, "reason:", reason);
         if (socket.userId) {
             users.delete(socket.userId);
             console.log(`❌ Disconnected user: ${socket.userId}`);
